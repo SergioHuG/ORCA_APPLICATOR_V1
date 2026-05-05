@@ -1,0 +1,86 @@
+# configs/default.yaml
+# V1 configuration matching apply_test_kinematic_then_haptic_soft_bumper_V1 behavior
+
+serial:
+  port: /dev/orca0
+  baudrate: 1000000
+  interframe_us: 80
+
+loop:
+  # Target high-speed control loop rate (stream_cache reads)
+  control_hz: 250
+
+motion:
+  # HOME is computed as (pos_after_autozero + home_offset_um)
+  home_offset_um: 15000
+
+  # Motion IDs
+  motion_home_id: 0
+  motion_return_id: 1
+  motion_apply_id: 2
+
+  # Kinematic motion type: 1=min jerk
+  kin_type_min_jerk: 1
+
+  # Timing (ms)
+  motion_home_time_ms: 500
+  motion_return_time_ms: 200
+  apply_time_ms: 350
+
+  # Apply travel
+  apply_travel_um: 200000
+
+  # Enter haptics this far before the apply limit
+  haptic_before_limit_um: 150000
+
+contact:
+  # Contact detection threshold (delta from baseline)
+  contact_rise_mN: 3000
+
+haptics:
+  # Spring bumper
+  spring_gain: 200
+  spring_dead_zone: 0
+  spring_sat_n: 10
+
+  # Damper
+  damper_gain: 700
+
+timeouts:
+  autozero_timeout_s: 60.0
+  home_timeout_s: 10.0
+  return_timeout_s: 10.0
+
+tolerances:
+  home_tol_um: 800
+
+logging:
+  log_dir: logs
+  csv_prefix: apply_kin_then_haptic
+
+gpio:
+  enabled: true
+
+  backend: pigpio
+  pigpio_host: localhost
+
+  autozero:
+    pin: 5
+    pull_up: true
+    bounce_time_s: 0.05     # human input debounce (gpiozero)
+    lockout_ms: 300         # software lockout (safety)
+
+  apply:
+    pin: 6
+    pull_up: true
+    bounce_time_s: null     # fastest edge response
+    lockout_ms: 150         # software lockout (safety)
+
+
+
+
+behavior:
+  # New desired sequencing:
+  # - On boot (or later when triggered by GPIO) do AutoZero -> Home.
+  # - Then idle and wait for an APPLY trigger.
+  autozero_home_on_boot: true
