@@ -84,3 +84,75 @@ behavior:
   # - On boot (or later when triggered by GPIO) do AutoZero -> Home.
   # - Then idle and wait for an APPLY trigger.
   autozero_home_on_boot: true
+
+
+# -----------------------------------------------------------------------
+# V2 label applicator — technical-note haptic-only architecture
+#
+# All three springs + damper are configured once after AutoZero and left
+# running.  Runtime state changes are made exclusively via set_constant_force().
+# No kinematic motions are used after the initial home sequence.
+#
+# Positions marked "(offset from home_um)" are added to the AutoZero-derived
+# home position at runtime to compute absolute motor positions.
+#
+# apply_force_mN is computed automatically:
+#   apply_force_mN = target_contact_force_mN - gravity_mN
+# Do NOT set apply_force_mN here; edit target_contact_force_mN / gravity_mN.
+# -----------------------------------------------------------------------
+label_applicator:
+
+  # --- Force parameters ---
+  # target_contact_force_mN: total desired downward force at label surface (mN).
+  #   This is the SUM of motor contribution and gravity:
+  #   apply_force_mN (motor) + gravity_mN = target_contact_force_mN
+  # gravity_mN: gravitational contribution of the shaft (shaft mass * g, in mN).
+  #   Shaft-down orientation means gravity already drives the apply stroke, so the
+  #   motor only needs to supply the remainder (apply_force_mN = target - gravity).
+  #
+  # Example (matching technical note): target=40000, gravity=20000 -> apply_force=20000
+  # Measure gravity_mN by reading force_mN in SleepMode with shaft hanging free.
+  target_contact_force_mN: 40000
+  gravity_mN: 20000
+
+  # --- Position offsets (from home_um) ---
+  # extended_position_offset_um: distance to the apply target / Spring B center.
+  #   Also used as the position threshold in contact detection.
+  # spring_c_position_offset_um: center of the Spring C slingshot effect.
+  #   Must be strictly between 0 and extended_position_offset_um.
+  extended_position_offset_um: 180000
+  spring_c_position_offset_um: 90000
+
+  # --- Spring A — home bumper (coupling: both directions) ---
+  # Centered at home_um.  Holds shaft at rest; provides return restoring force.
+  spring_a_gain: 500
+  spring_a_dead_zone: 0
+  spring_a_saturation_mN: 60000
+
+  # --- Spring B — end-of-travel guard (coupling: both directions) ---
+  # Centered at home_um + extended_position_offset_um.
+  spring_b_gain: 500
+  spring_b_dead_zone: 0
+  spring_b_saturation_mN: 60000
+
+  # --- Spring C — fast-travel slingshot (coupling: positive only) ---
+  # Centered at home_um + spring_c_position_offset_um.
+  # Only pushes toward extension; does not resist retraction.
+  spring_c_gain: 200
+  spring_c_dead_zone: 0
+  spring_c_saturation_mN: 30000
+
+  # --- Damper ---
+  damper_gain: 300
+
+  # --- Contact detection (three-condition check) ---
+  # Trigger when ALL of:
+  #   |force - apply_force_mN| <= force_detection_envelope_mN
+  #   |velocity|               <= stopped_velocity_um_s
+  #   position                 <  home_um + extended_position_offset_um
+  stopped_velocity_um_s: 1000
+  force_detection_envelope_mN: 5000
+
+  # --- State timing ---
+  # How long (ms) to hold in HOLD_CONTACT before writing set_constant_force(0).
+  hold_contact_duration_ms: 500

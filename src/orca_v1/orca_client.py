@@ -59,7 +59,11 @@ def _raise_if_err(err, label: str) -> None:
 class StreamSnapshot:
     """
     A typed snapshot of the SDK stream cache.
-    Field names mirror what you used: position, force, power, voltage, temperature, errors.
+
+    Fields from SDK stream data: position, force, power, voltage, temperature, errors.
+    velocity_um_s is derived from position deltas inside OrcaClient.read_stream_cache()
+    because pyorcasdk does not expose velocity in the stream cache directly.
+    Defaults to 0.0 so V1 code that ignores velocity is unaffected.
     """
     t_epoch_s: float
     position_um: int
@@ -68,6 +72,7 @@ class StreamSnapshot:
     voltage: int
     temperature: int
     errors: int
+    velocity_um_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -103,6 +108,11 @@ class OrcaClient:
         # Track last stream tuple to detect staleness
         self._last_stream_tuple: Optional[Tuple[int, int, int, int, int, int]] = None
         self._is_open = False
+
+        # Velocity tracking: derived from position deltas since SDK does not expose velocity.
+        # Reset between cycles via reset_velocity_tracker().
+        self._vel_last_pos_um: Optional[int] = None
+        self._vel_last_t: Optional[float] = None
 
     @property
     def motor(self) -> Actuator:
@@ -160,18 +170,32 @@ class OrcaClient:
         """
         Read cached stream values (non-blocking; uses SDK's last received frame).
         Assumes run() is being called regularly.
+
+        velocity_um_s is derived from the position delta between consecutive calls.
+        Call reset_velocity_tracker() at the start of each apply cycle to prevent
+        a stale delta from the previous cycle polluting the first sample.
         """
         sd = self._motor.get_stream_data()
-        # sd fields are raw numeric types; we cast to ints for consistency/logging
         now = time.time()
+        pos_um = int(sd.position)
+
+        # Derive velocity from position delta
+        vel_um_s = 0.0
+        if self._vel_last_pos_um is not None and self._vel_last_t is not None:
+            dt = max(1e-6, now - self._vel_last_t)
+            vel_um_s = (pos_um - self._vel_last_pos_um) / dt
+        self._vel_last_pos_um = pos_um
+        self._vel_last_t = now
+
         return StreamSnapshot(
             t_epoch_s=now,
-            position_um=int(sd.position),
+            position_um=pos_um,
             force_mN=int(sd.force),
             power=int(sd.power),
             voltage=int(sd.voltage),
             temperature=int(sd.temperature),
             errors=int(sd.errors),
+            velocity_um_s=vel_um_s,
         )
 
     def stream_tuple(self) -> Tuple[int, int, int, int, int, int]:
@@ -267,6 +291,37 @@ class OrcaClient:
         if p.error:
             raise OrcaCommError(f"get_position_um error: {_err_to_str(p.error)}")
         return int(p.value)
+
+    def reset_velocity_tracker(self) -> None:
+        """
+        Reset the internal position-delta velocity tracker.
+
+        Call this at the start of each apply cycle so the first velocity sample
+        is not corrupted by the position change from the previous cycle end.
+        """
+        self._vel_last_pos_um = None
+        self._vel_last_t = None
+
+    # ---- haptic force control ----
+    def set_constant_force(self, force_mN: int) -> None:
+        """
+        Write a constant force bias to the motor (mN).
+
+        This is the sole runtime state trigger for the technical-note label applicator:
+          - Write apply_force_mN  -> overcomes Spring A, shaft accelerates toward label.
+          - Write 0               -> Spring A restores shaft to home position.
+
+        Sign convention (shaft pointing down, gravity assists extension):
+          Positive  = downward (extension direction).
+          Negative  = upward   (retraction direction).
+
+        Must be called while motor is in HapticMode. Safe to call every loop tick
+        with the same value; the motor discards redundant writes efficiently.
+        """
+        _raise_if_err(
+            self._motor.set_constant_force(int(force_mN)),
+            f"set_constant_force({force_mN})",
+        )
 
     # ---- safety helpers ----
     def safe_stop(self) -> None:
